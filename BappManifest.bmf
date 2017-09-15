@@ -1,0 +1,12 @@
+Uuid: dcf7c44cdc7b4698bba86d94c692fb7f
+ExtensionType: 1
+Name: Handy Collaborator
+RepoName: handy-collaborator
+ScreenVersion: 0.1
+SerialVersion: 1
+MinPlatformVersion: 0
+ProOnly: False
+Author: Federico Dotta
+ShortDescription: Assists with using Collaborator during manual testing.
+EntryPoint: target/HandyCollaborator-0.1-jar-with-dependencies.jar
+BuildCommand: mvn package -DskipTests=true -Dmaven.javadoc.skip=true -B
