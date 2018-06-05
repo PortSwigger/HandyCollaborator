@@ -115,7 +115,7 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
             			+ " of the current contexts, included the ones generated when polling was disabled. This option is usefull during internal"
             			+ " penetration tests in order to avoid lot of polling alerts in \"Alert\" in Burp Suite Alertts tab. After the internal"
             			+ " penetration test you can connect to Internet and obtain all the interactions of the internal penetration test. "
-            			+ "Remeber that if you close Burp Suite you will loose all Collaborato Interactions (by Burp Suite design)";
+            			+ "Remeber that if you close Burp Suite you will loose all Collaborator Interactions (by Burp Suite design)";
             	enablePollingLabel.setText("<html>" + enablePollingLabelContent + "</html>");
             	enablePollingLabel.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
             	
