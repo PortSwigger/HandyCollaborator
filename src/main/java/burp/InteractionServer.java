@@ -1,28 +1,27 @@
 package burp;
 
 import java.io.PrintWriter;
+import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Date;
-
-//import java.util.Iterator;
-//import java.util.Map;
-//import java.util.Set;
+import static java.util.concurrent.TimeUnit.*;
 
 public class InteractionServer extends Thread {
 
 	private IBurpExtenderCallbacks callbacks;
-	private HashMap<String,IHttpRequestResponse> processedRequestResponse;
+	private HashMap<String,IHttpRequestResponsePersisted> processedRequestResponse;
 	
     private PrintWriter stdout;
     private PrintWriter stderr;
     
-    private IBurpCollaboratorClientContext collaboratorContext;
+    private List<IBurpCollaboratorClientContext> collaboratorContextList;
     
     private volatile boolean goOn;
     
@@ -32,17 +31,26 @@ public class InteractionServer extends Thread {
     private static final String confidence = "Certain";
     
     private static final int pollingMilliseconds = 3000;
+    
+    private final Object pauseLock = new Object();
+    private volatile boolean paused = false;
 	
-	public InteractionServer(IBurpExtenderCallbacks callbacks, HashMap<String,IHttpRequestResponse> processedRequestResponse, IBurpCollaboratorClientContext collaboratorContext) {
-		
+	public InteractionServer(IBurpExtenderCallbacks callbacks, HashMap<String,IHttpRequestResponsePersisted> processedRequestResponse, IBurpCollaboratorClientContext initialCollaboratorContext) {
+						
 		this.callbacks = callbacks;
 		this.processedRequestResponse = processedRequestResponse;
 		
         // Initialize stdout and stderr
 		this.stdout = new PrintWriter(callbacks.getStdout(), true);
 		this.stderr = new PrintWriter(callbacks.getStderr(), true); 
-        		
-		this.collaboratorContext = collaboratorContext;
+        
+		this.collaboratorContextList = new ArrayList<IBurpCollaboratorClientContext>();
+		
+		if(initialCollaboratorContext != null) {
+			this.collaboratorContextList.add(initialCollaboratorContext);
+		} else {
+			stdout.println("Collaborator disabled");
+		}
 		
 		this.goOn = true;
 		
@@ -52,7 +60,24 @@ public class InteractionServer extends Thread {
 		this.goOn = goOn;
 	}
 	
-	public void addIssue(IBurpCollaboratorInteraction interaction) {
+	public void pause() {
+		paused = true;
+		stdout.println("Stopping Collaborator interactions polling");
+	}
+	
+	public void resumeThread() {
+		synchronized (pauseLock) {
+			paused = false;
+			pauseLock.notifyAll(); // Unblocks thread
+		}
+		stdout.println("Restarting Collaborator interactions polling");
+	}
+	
+	public void addNewCollaboratorContext(IBurpCollaboratorClientContext collaboratorContext) {
+		this.collaboratorContextList.add(collaboratorContext);
+	}
+	
+	public void addIssue(IBurpCollaboratorInteraction interaction, IBurpCollaboratorClientContext collaboratorContext) {
 		
 		String interactionId = interaction.getProperty("interaction_id");
 		IHttpRequestResponse requestResponse = processedRequestResponse.get(interactionId + "." + collaboratorContext.getCollaboratorServerLocation());
@@ -127,8 +152,8 @@ public class InteractionServer extends Thread {
 				
 				break;
 		
-		}
-		
+		}		
+			
 		CustomScanIssue newIssue = new CustomScanIssue(
 				requestResponse.getHttpService(),
                 callbacks.getHelpers().analyzeRequest(requestResponse).getUrl(), 
@@ -140,33 +165,89 @@ public class InteractionServer extends Thread {
                 remediation);
 
 		callbacks.addScanIssue(newIssue);
-	
+			
 	}
 	
 	public void run() {
 		
 		stdout.println("Thread started");
 		
+		DateFormat dateFormat = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss");
+		long INTERVAL = MILLISECONDS.convert(3, MINUTES);
+		Date lastPollingDate = null;
+		
 		while(goOn) {
 			
-			List<IBurpCollaboratorInteraction> allCollaboratorInteractions = collaboratorContext.fetchAllCollaboratorInteractions();
-			
-			for(int i=0;  i < allCollaboratorInteractions.size(); i++) {
-								
-				addIssue(allCollaboratorInteractions.get(i));
+			synchronized (pauseLock) {
 				
-				/*
-				// DEBUG - Print all interaction properties
-				Map<java.lang.String,java.lang.String> currentProperties = allCollaboratorInteractions.get(i).getProperties();
-				Set<String> a = currentProperties.keySet();
-				Iterator<String> b = a.iterator();
-				while(b.hasNext()) {
-					String d = b.next();
-					stdout.println(d);
-					stdout.println(currentProperties.get(d));
+				// Maybe is changed while waiting for pauseLock
+				if(!goOn) {
+					break;
 				}
-				*/
 				
+				if (paused) {					
+					try {
+						pauseLock.wait();
+					} catch (InterruptedException e) {
+						stderr.println("Exception with wait/notify");
+						stderr.println(e.toString());
+					}
+					// Maybe is changed while waiting for pauseLock
+					if(!goOn) {
+						break;
+					}
+				}			
+				
+			}
+			
+			Date date = new Date();			
+			if(lastPollingDate == null || (date.getTime() - lastPollingDate.getTime()) > INTERVAL) {
+				stdout.println("**** " + dateFormat.format(date) + " ****");
+				for(int i=0;i<collaboratorContextList.size();i++) {
+					try {
+						stdout.println("Polling " + collaboratorContextList.get(i).getCollaboratorServerLocation());
+					} catch(IllegalStateException e) {
+						stdout.println("Can't fetch interactions while Collaborator is disabled (Burp Suite limitation)");
+					} catch(Exception f) {
+						stdout.println("Exception");
+						stdout.println(f.toString());
+					}
+				}
+				stdout.println();
+				lastPollingDate = date;
+			}
+			
+			for(int i=0;i<collaboratorContextList.size();i++) {
+								
+				try {
+								
+					List<IBurpCollaboratorInteraction> allCollaboratorInteractions = collaboratorContextList.get(i).fetchAllCollaboratorInteractions();
+					
+					for(int j=0;  j < allCollaboratorInteractions.size(); j++) {
+										
+						addIssue(allCollaboratorInteractions.get(j),collaboratorContextList.get(i));
+						
+						/*
+						// DEBUG - Print all interaction properties
+						Map<java.lang.String,java.lang.String> currentProperties = allCollaboratorInteractions.get(i).getProperties();
+						Set<String> a = currentProperties.keySet();
+						Iterator<String> b = a.iterator();
+						while(b.hasNext()) {
+							String d = b.next();
+							stdout.println(d);
+							stdout.println(currentProperties.get(d));
+						}
+						*/
+						
+					}
+					
+				} catch(IllegalStateException e) {
+					//stdout.println("Can't fetch interactions while Collaborator is disabled (Burp Suite limitation)");
+				} catch(Exception f) {
+					stdout.println("Exception");
+					stdout.println(f.toString());
+				}
+					
 			}
 			
 			try {

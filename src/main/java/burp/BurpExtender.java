@@ -1,5 +1,8 @@
 package burp;
 
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Font;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.PrintWriter;
@@ -8,11 +11,19 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
+import org.json.*;
+
+import javax.swing.BorderFactory;
+import javax.swing.BoxLayout;
+import javax.swing.JCheckBox;
+import javax.swing.JLabel;
 import javax.swing.JMenuItem;
+import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
 
 import org.apache.commons.lang3.ArrayUtils;
 
-public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionListener, IExtensionStateListener, IHttpListener {
+public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionListener, IExtensionStateListener, IHttpListener,  ITab {
 	
     private IBurpExtenderCallbacks callbacks;
     private IExtensionHelpers helpers;
@@ -22,15 +33,23 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
     
     private IContextMenuInvocation currentInvocation;
     
-    private HashMap<String,IHttpRequestResponse> processedRequestResponse;
+    private HashMap<String,IHttpRequestResponsePersisted> processedRequestResponse;
     
     private IBurpCollaboratorClientContext collaboratorContext;
     
     private InteractionServer interactionServer;
     
     private final String collaboratorInsertionPointString = (char)167 + "COLLABORATOR_PAYLOAD" + (char)167;
+    
+    private String currentCollaboratorLocation;
+    private boolean currentCollaboratorPollOverUnenecryptedHttp;
+    private String currentCollaboratorPollingLocation;
+    private String currentCollaboratorType;
+    
+    private JPanel mainPanel;
+    private JCheckBox enablePolling;
 
-	public void registerExtenderCallbacks(IBurpExtenderCallbacks callbacks) {
+	public void registerExtenderCallbacks(final IBurpExtenderCallbacks callbacks) {
 
         this.callbacks = callbacks;
         
@@ -53,21 +72,75 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
         stdout = new PrintWriter(callbacks.getStdout(), true);
         stderr = new PrintWriter(callbacks.getStderr(), true); 
         
-        stdout.println("Welcome to Handy Collaborator, the plugin that make it possible to use the Collaborator during manual testing!");
+        stdout.println("Welcome to Handy Collaborator, the plugin that make it comfortable to use the Collaborator during manual testing!");
         stdout.println("Created by Federico Dotta and Gianluca Baldi");
         stdout.println("");
         stdout.println("Github: https://github.com/federicodotta/HandyCollaborator");
         stdout.println("");	
                 
-        collaboratorContext = callbacks.createBurpCollaboratorClientContext();
+        initializeCurrentCollaboratorVariables();
         
-        processedRequestResponse = new HashMap<String,IHttpRequestResponse>();
+        if(!(currentCollaboratorType.equals("none"))) {
+        	collaboratorContext = callbacks.createBurpCollaboratorClientContext();
+        } else {
+        	collaboratorContext = null;
+        }
+        
+        processedRequestResponse = new HashMap<String,IHttpRequestResponsePersisted>();
+        
         interactionServer = new InteractionServer(callbacks,processedRequestResponse,collaboratorContext);
-        
+                
         interactionServer.start();
+        
+        SwingUtilities.invokeLater(new Runnable()  {
+        	
+            @Override
+            public void run()  {
+            	
+            	mainPanel = new JPanel();
+            	mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
+            	
+            	JPanel innerPanel = new JPanel();
+            	innerPanel.setLayout(new BoxLayout(innerPanel, BoxLayout.Y_AXIS));
+            	innerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+            	
+            	JLabel pollingTitleLabel = new JLabel("Polling options");
+            	pollingTitleLabel.setForeground(new Color(249,130,11));
+            	pollingTitleLabel.setFont(new Font("Nimbus", Font.BOLD, 16));
+            	pollingTitleLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+            	
+            	JLabel enablePollingLabel = new JLabel();            			
+            	String enablePollingLabelContent = "Unchecking this checkbox will temporary disable polling interactions from Collaborator "
+            			+ "Server. This option WILL NOT delete Collaborator Contexts. If you re-enable the flag you will get all the interactions"
+            			+ " of the current contexts, included the ones generated when polling was disabled. This option is usefull during internal"
+            			+ " penetration tests in order to avoid lot of polling alerts in \"Alert\" in Burp Suite Alertts tab. After the internal"
+            			+ " penetration test you can connect to Internet and obtain all the interactions of the internal penetration test. "
+            			+ "Remeber that if you close Burp Suite you will loose all Collaborato Interactions (by Burp Suite design)";
+            	enablePollingLabel.setText("<html>" + enablePollingLabelContent + "</html>");
+            	enablePollingLabel.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+            	
+            	enablePolling = new JCheckBox("Enable polling");
+            	enablePolling.setSelected(true);
+            	enablePolling.setActionCommand("enableDisablePolling");
+            	enablePolling.addActionListener(BurpExtender.this);
+            	enablePolling.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+            	
+            	innerPanel.add(pollingTitleLabel);
+            	innerPanel.add(enablePollingLabel);
+            	innerPanel.add(enablePolling);
+            	
+            	mainPanel.add(innerPanel);
+            	
+            	callbacks.customizeUiComponent(mainPanel);
+                
+                callbacks.addSuiteTab(BurpExtender.this);
+            	
+            }
+            
+        });
 		
 	}
-
+	
 	public List<JMenuItem> createMenuItems(IContextMenuInvocation invocation) {
 
 		if(invocation.getInvocationContext() == IContextMenuInvocation.CONTEXT_MESSAGE_EDITOR_REQUEST || 
@@ -96,12 +169,79 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
 			
 		}
 	}
+		
+	public void initializeCurrentCollaboratorVariables() {
+		
+		String collaboratorOption = callbacks.saveConfigAsJson("project_options.misc.collaborator_server");
+		JSONObject rootJsonObject = new JSONObject(collaboratorOption);
+		currentCollaboratorLocation = rootJsonObject.getJSONObject("project_options").getJSONObject("misc").getJSONObject("collaborator_server").getString("location");
+		currentCollaboratorPollOverUnenecryptedHttp = rootJsonObject.getJSONObject("project_options").getJSONObject("misc").getJSONObject("collaborator_server").getBoolean("poll_over_unencrypted_http");
+		currentCollaboratorPollingLocation = rootJsonObject.getJSONObject("project_options").getJSONObject("misc").getJSONObject("collaborator_server").getString("polling_location");
+		currentCollaboratorType = rootJsonObject.getJSONObject("project_options").getJSONObject("misc").getJSONObject("collaborator_server").getString("type");
+		
+	}
+	
+	public boolean isCollaboratorChanged() {		
+		
+		String collaboratorOption = callbacks.saveConfigAsJson("project_options.misc.collaborator_server");
+		JSONObject rootJsonObject = new JSONObject(collaboratorOption);
+				
+		if(!(currentCollaboratorLocation.equals(rootJsonObject.getJSONObject("project_options").getJSONObject("misc").getJSONObject("collaborator_server").getString("location"))) ||
+		   !(currentCollaboratorPollOverUnenecryptedHttp == rootJsonObject.getJSONObject("project_options").getJSONObject("misc").getJSONObject("collaborator_server").getBoolean("poll_over_unencrypted_http")) ||
+		   !(currentCollaboratorPollingLocation.equals(rootJsonObject.getJSONObject("project_options").getJSONObject("misc").getJSONObject("collaborator_server").getString("polling_location"))) ||
+		   !(currentCollaboratorType.equals(rootJsonObject.getJSONObject("project_options").getJSONObject("misc").getJSONObject("collaborator_server").getString("type"))) ) {
+			return true;
+		} else {
+			return false;
+		}
+		
+	}
+	
+	public void checkCollaboratorChanges() {
+		
+		if(isCollaboratorChanged()) {
+			
+			initializeCurrentCollaboratorVariables();
+			
+			if(!(currentCollaboratorType.equals("none"))) {
+				
+				stdout.println("Collaborator location changed! Adding a new collaborator context to the polling thread!");
+				collaboratorContext = callbacks.createBurpCollaboratorClientContext();
+				interactionServer.addNewCollaboratorContext(collaboratorContext);
+									
+			} else {
+				collaboratorContext = null;
+				stdout.println("Collaborator disabled!");
+
+			}		
+			
+		}
+		
+	}
 
 	public void actionPerformed(ActionEvent event) {
 
 		String command = event.getActionCommand();
+		
+		if(command.equals("enableDisablePolling")) {
+			
+			if(enablePolling.isSelected()) {
+				
+				interactionServer.resumeThread();
+				
+			} else {
+				
+				interactionServer.pause();
+				
+			}
 	
-		if(command.equals("contextInsertCollaboratorPayload") || command.equals("contextInsertCollaboratorInsertionPoint")) {
+		} else if(command.equals("contextInsertCollaboratorPayload") || command.equals("contextInsertCollaboratorInsertionPoint")) {
+			
+			// DEBUG
+			//String collaboratorOption = callbacks.saveConfigAsJson("project_options.misc.collaborator_server");
+			//stdout.println(collaboratorOption);
+			
+			checkCollaboratorChanges();			
 			
 			IHttpRequestResponse[] selectedItems = currentInvocation.getSelectedMessages();
 			int[] selectedBounds = currentInvocation.getSelectionBounds();
@@ -120,7 +260,9 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
 		
 			String currentCollaboratorPayload = "";
 			
-			if(command.equals("contextInsertCollaboratorPayload")) {			
+			if(collaboratorContext == null) {
+				currentCollaboratorPayload = "THE_COLLABORATOR_IS_DISABLED";
+			} else if(command.equals("contextInsertCollaboratorPayload")) {			
 				currentCollaboratorPayload = collaboratorContext.generatePayload(true);
 			} else {
 				currentCollaboratorPayload = collaboratorInsertionPointString;
@@ -138,7 +280,7 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
 			
 			// Add request/response to processed requests/responses
 			if(command.equals("contextInsertCollaboratorPayload")) {
-				processedRequestResponse.put(currentCollaboratorPayload, selectedItems[0]);
+				processedRequestResponse.put(currentCollaboratorPayload, callbacks.saveBuffersToTempFiles(selectedItems[0]));
 			}
 
 		}
@@ -154,46 +296,56 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
 	
 	private void replaceInsertionPointWithPayload(IHttpRequestResponse messageInfo, boolean request) {
 		
-		String requestResponse = "";
+		checkCollaboratorChanges();
 		
-		if(request){
-			byte[] requestByte = messageInfo.getRequest();
-			requestResponse = new String(requestByte);			
+		if(collaboratorContext != null) {
+		
+			String requestResponse = "";
+			
+			if(request){
+				byte[] requestByte = messageInfo.getRequest();
+				requestResponse = new String(requestByte);			
+			} else {
+				byte[] responseByte = messageInfo.getResponse();
+				requestResponse = new String(responseByte);	
+			}
+			
+			// Count occurences of insertion point string in request/response
+			int lastIndex = 0;
+			int count = 0;
+			while(lastIndex != -1){
+	
+			    lastIndex = requestResponse.indexOf(collaboratorInsertionPointString,lastIndex);
+	
+			    if(lastIndex != -1){
+			        count ++;
+			        lastIndex += collaboratorInsertionPointString.length();
+			    }
+			}
+			
+			// Replace all the occurrences with a Collaborator payload
+			String[] collaboratorPayloads = new String[count];
+			for(int i=0; i<count; i++) {
+				collaboratorPayloads[i] = collaboratorContext.generatePayload(true);
+				requestResponse = requestResponse.replaceFirst(collaboratorInsertionPointString, collaboratorPayloads[i]);
+			}
+			
+			// Replace request/response with new one
+			if(request){
+				messageInfo.setRequest(requestResponse.getBytes());
+			} else {
+				messageInfo.setResponse(requestResponse.getBytes());
+			}
+			
+			// Save all requests/reponses and collaborator payloads
+			for(int i=0; i<count; i++) {
+				processedRequestResponse.put(collaboratorPayloads[i], callbacks.saveBuffersToTempFiles(messageInfo));
+			}
+			
 		} else {
-			byte[] responseByte = messageInfo.getResponse();
-			requestResponse = new String(responseByte);	
-		}
-		
-		// Count occurences of insertion point string in request/response
-		int lastIndex = 0;
-		int count = 0;
-		while(lastIndex != -1){
-
-		    lastIndex = requestResponse.indexOf(collaboratorInsertionPointString,lastIndex);
-
-		    if(lastIndex != -1){
-		        count ++;
-		        lastIndex += collaboratorInsertionPointString.length();
-		    }
-		}
-		
-		// Replace all the occurrences with a Collaborator payload
-		String[] collaboratorPayloads = new String[count];
-		for(int i=0; i<count; i++) {
-			collaboratorPayloads[i] = collaboratorContext.generatePayload(true);
-			requestResponse = requestResponse.replaceFirst(collaboratorInsertionPointString, collaboratorPayloads[i]);
-		}
-		
-		// Replace request/response with new one
-		if(request){
-			messageInfo.setRequest(requestResponse.getBytes());
-		} else {
-			messageInfo.setResponse(requestResponse.getBytes());
-		}
-		
-		// Save all requests/reponses and collaborator payloads
-		for(int i=0; i<count; i++) {
-			processedRequestResponse.put(collaboratorPayloads[i], messageInfo);
+			
+			stderr.println("The collaborator is disabled. Replacement with collaborator payload is not possible...");
+			
 		}
 		
 	}
@@ -227,6 +379,16 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
     		
 		}
 		
+	}
+
+	@Override
+	public String getTabCaption() {
+		return "Handy Collaborator";
+	}
+
+	@Override
+	public Component getUiComponent() {
+		return mainPanel;
 	}
 	
 }
