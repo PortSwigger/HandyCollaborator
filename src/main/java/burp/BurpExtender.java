@@ -109,7 +109,8 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ActionL
             	pollingTitleLabel.setFont(new Font("Nimbus", Font.BOLD, 16));
             	pollingTitleLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
             	
-            	JLabel enablePollingLabel = new JLabel();            			
+            	JLabel enablePollingLabel = new JLabel();
+				enablePollingLabel.putClientProperty("html.disable", null);
             	String enablePollingLabelContent = "Unchecking this checkbox will temporary disable polling interactions from Collaborator "
             			+ "Server. This option WILL NOT delete Collaborator Contexts. If you re-enable the flag you will get all the interactions"
             			+ " of the current contexts, included the ones generated when polling was disabled. This option is usefull during internal"
